@@ -292,6 +292,7 @@ body {
   background: linear-gradient(135deg, rgba(124,111,255,0.04) 0%, transparent 60%);
   opacity: 0;
   transition: opacity var(--transition);
+  pointer-events: none;
 }
 
 .job-card:hover {
