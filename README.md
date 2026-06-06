@@ -33,4 +33,3 @@ node server.js
 # Start frontend (port 3000) — in a separate terminal
 cd frontend && npm start
 API
-MethodEndpointDescriptionGET/jobsFetch jobs — supports ?search=, ?type=POST/syncPull latest jobs from HimalayasGET/healthHealth check
