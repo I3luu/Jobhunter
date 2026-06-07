@@ -1,32 +1,40 @@
 const fetch = require('node-fetch');
 const { pool } = require('../db');
 
-const REMOTIVE_BASE = 'https://remotive.com/api/remote-jobs';
-const CATEGORIES = ['software-dev', 'devops-sysadmin', 'data-science'];
+// ── Config ────────────────────────────────────────────────────────────────────
 
-const JOB_TYPE_MAP = {
-  full_time: 'Full Time',
-  part_time: 'Part Time',
-  contract: 'Contractor',
-  freelance: 'Freelance',
-  internship: 'Internship',
-};
+const REMOTIVE_CATEGORIES = ['software-dev', 'devops-sysadmin', 'data-science'];
 
-// A job passes if it has at least one of these tags
+// ── Tech filter ───────────────────────────────────────────────────────────────
+
 const TECH_TAGS = new Set([
-  'api', 'aws', 'azure', 'backend', 'blockchain', 'c', 'c#', 'c++', 'cloud',
+  'api', 'aws', 'azure', 'backend', 'blockchain', 'c', 'c#', 'c++',
   'css', 'data engineering', 'data science', 'database', 'devops', 'docker',
-  'elasticsearch', 'engineering', 'frontend', 'fullstack', 'gcp', 'git',
-  'golang', 'html', 'infrastructure', 'ios', 'android', 'java', 'javascript',
+  'elasticsearch', 'frontend', 'fullstack', 'gcp', 'golang',
+  'html', 'infrastructure', 'ios', 'android', 'java', 'javascript',
   'kubernetes', 'linux', 'machine learning', 'mobile', 'mongodb', 'mysql',
   'next.js', 'node.js', 'php', 'postgresql', 'python', 'react', 'react native',
   'redis', 'rest', 'ruby/rails', 'rust', 'security', 'sql', 'swift',
-  'terraform', 'testing', 'typescript', 'ui/ux', 'unity', 'vue', 'web',
+  'terraform', 'typescript', 'ui/ux', 'unity', 'vue',
   'ai/ml', 'nlp', 'spark', 'kafka', 'microservices', 'system architecture',
-  'bash', 'scala', 'kotlin', 'flutter', 'solidity', 'angular',
+  'bash', 'scala', 'kotlin', 'flutter', 'solidity', 'angular', 'infosec',
+  'cloud', 'git', 'web', 'open source', 'saas',
 ]);
 
-// A job is rejected if its title contains any of these (case-insensitive)
+// 'go' and 'testing' were tried as exact tag matches but they're too generic —
+// they appear on non-tech postings (clinical trial "testing", research "go"
+// tags) and let noise through. Title keywords below catch real tech roles
+// like "Software Developer" instead, which is a more specific signal.
+const TECH_TITLE_KEYWORDS = [
+  'engineer', 'developer', 'devops', 'backend', 'frontend', 'fullstack',
+  'full-stack', 'full stack', 'software', 'data engineer', 'data scientist',
+  'data engineering', 'data science', 'machine learning', 'ml ',
+  'ai ', 'artificial intelligence', 'cloud', 'platform', 'infrastructure',
+  'security', 'sre', 'architect', 'ios', 'android', 'mobile', 'api',
+  'database', 'sysadmin', 'sys admin', 'qa ', 'quality assurance',
+  'typescript', 'javascript', 'python', 'golang', 'react', 'node',
+];
+
 const TITLE_BLOCKLIST = [
   'writer', 'copywriter', 'sales', 'recruiter', 'recruiting', 'hr ',
   'human resources', 'accountant', 'accounting', 'bookkeeper', 'payroll',
@@ -45,15 +53,22 @@ function isTechJob(job) {
   const title = (job.title || '').toLowerCase();
   const tags = (job.tags || []).map(t => t.toLowerCase());
 
-  // Reject on title blocklist first
-  if (TITLE_BLOCKLIST.some(word => title.includes(word))) return false;
+  if (TITLE_BLOCKLIST.some(w => title.includes(w))) return false;
 
-  // Must have at least one recognized tech tag
-  return tags.some(tag => TECH_TAGS.has(tag));
+  const hasTagSignal = tags.some(tag => TECH_TAGS.has(tag));
+  const hasTitleSignal = TECH_TITLE_KEYWORDS.some(kw => title.includes(kw));
+
+  // RemoteOK tags are category-level (applied to all jobs), not job-specific —
+  // a tag match alone proves nothing there, so both signals must agree.
+  if (job.external_id && job.external_id.startsWith('remoteok-')) {
+    return hasTagSignal && hasTitleSignal;
+  }
+
+  // Other sources tag jobs individually, so either signal is enough —
+  // a clear title ("Senior Software Developer") counts even with sparse tags.
+  return hasTagSignal || hasTitleSignal;
 }
 
-// Normalize a title for deduplication — strips trailing city/location in parens
-// e.g. "Staff SWE (São Paulo)" → "staff swe"
 function normalizeTitle(title) {
   return title.replace(/\s*\(.*?\)\s*$/, '').trim().toLowerCase();
 }
@@ -61,32 +76,91 @@ function normalizeTitle(title) {
 function deduplicateJobs(jobs) {
   const seen = new Set();
   return jobs.filter(job => {
-    const key = `${job.company_name}||${normalizeTitle(job.title)}`;
+    const key = `${job.company}||${normalizeTitle(job.title)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 }
 
-async function syncJobsFromHimalayas() {
-  console.log('🔄 Syncing jobs from Remotive API...');
+// ── API fetchers — each returns an array of normalized job objects ─────────────
 
-  let raw = [];
+const JOB_TYPE_MAP = {
+  full_time: 'Full Time', part_time: 'Part Time',
+  contract: 'Contractor', freelance: 'Freelance', internship: 'Internship',
+};
 
-  try {
-    for (const category of CATEGORIES) {
-      const response = await fetch(`${REMOTIVE_BASE}?category=${category}`, {
-        headers: { 'User-Agent': 'JobHunterApp/1.0', 'Accept': 'application/json' },
-        timeout: 10000,
+async function fetchRemotive() {
+  const jobs = [];
+  for (const category of REMOTIVE_CATEGORIES) {
+    const res = await fetch(`https://remotive.com/api/remote-jobs?category=${category}`, {
+      headers: { 'User-Agent': 'JobHunterApp/1.0' }, timeout: 10000,
+    });
+    if (!res.ok) throw new Error(`Remotive HTTP ${res.status}`);
+    const data = await res.json();
+    for (const j of (data.jobs || [])) {
+      jobs.push({
+        external_id: `remotive-${j.id}`,
+        title: j.title,
+        company: j.company_name,
+        company_logo: j.company_logo || null,
+        location: j.candidate_required_location || 'Remote',
+        job_type: JOB_TYPE_MAP[j.job_type] || j.job_type || null,
+        salary_min: null,
+        salary_max: null,
+        salary_currency: null,
+        description: j.description || null,
+        url: j.url,
+        tags: j.tags || [],
+        date_posted: j.publication_date ? new Date(j.publication_date) : null,
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      raw.push(...(data.jobs || []));
     }
-  } catch (err) {
-    console.warn(`⚠️  Remotive API unreachable: ${err.message}`);
-    return { inserted: 0, skipped: 0, total: 0 };
   }
+  return jobs;
+}
+
+async function fetchRemoteOK() {
+  const res = await fetch('https://remoteok.com/api', {
+    headers: { 'User-Agent': 'JobHunterApp/1.0' }, timeout: 10000,
+  });
+  if (!res.ok) throw new Error(`RemoteOK HTTP ${res.status}`);
+  const data = await res.json();
+  return data
+    .filter(j => j && j.id && j.position)
+    .map(j => ({
+      external_id: `remoteok-${j.id}`,
+      title: j.position,
+      company: j.company,
+      company_logo: j.company_logo || j.logo || null,
+      location: j.location || 'Remote',
+      job_type: null,
+      salary_min: j.salary_min > 0 ? j.salary_min : null,
+      salary_max: j.salary_max > 0 ? j.salary_max : null,
+      salary_currency: (j.salary_min > 0 || j.salary_max > 0) ? 'USD' : null,
+      description: j.description || null,
+      url: j.url,
+      tags: j.tags || [],
+      date_posted: j.date ? new Date(j.date) : null,
+    }));
+}
+
+// ── Main sync ─────────────────────────────────────────────────────────────────
+
+async function syncJobs() {
+  console.log('🔄 Syncing jobs from Remotive + RemoteOK...');
+
+  const results = await Promise.allSettled([fetchRemotive(), fetchRemoteOK()]);
+
+  const [remotiveResult, remoteOKResult] = results;
+  if (remotiveResult.status === 'rejected')
+    console.warn('⚠️  Remotive failed:', remotiveResult.reason.message);
+  if (remoteOKResult.status === 'rejected')
+    console.warn('⚠️  RemoteOK failed:', remoteOKResult.reason.message);
+
+  const raw = [
+    ...(remotiveResult.status === 'fulfilled' ? remotiveResult.value : []),
+    ...(remoteOKResult.status === 'fulfilled' ? remoteOKResult.value : []),
+  ];
 
   const filtered = deduplicateJobs(raw.filter(isTechJob));
   console.log(`📥 Fetched ${raw.length} raw → ${filtered.length} after filter + dedup`);
@@ -104,22 +178,11 @@ async function syncJobsFromHimalayas() {
          ON CONFLICT (external_id) DO NOTHING
          RETURNING id`,
         [
-          String(job.id),
-          job.title,
-          job.company_name,
-          job.company_logo || null,
-          job.candidate_required_location || 'Remote',
-          JOB_TYPE_MAP[job.job_type] || job.job_type || null,
-          null,
-          null,
-          null,
-          job.description || null,
-          job.url,
-          job.tags || [],
-          job.publication_date ? new Date(job.publication_date) : null,
+          job.external_id, job.title, job.company, job.company_logo,
+          job.location, job.job_type, job.salary_min, job.salary_max,
+          job.salary_currency, job.description, job.url, job.tags, job.date_posted,
         ]
       );
-
       if (result.rows.length > 0) inserted++;
       else skipped++;
     } catch (err) {
@@ -132,4 +195,4 @@ async function syncJobsFromHimalayas() {
   return { inserted, skipped, total: filtered.length };
 }
 
-module.exports = { syncJobsFromHimalayas };
+module.exports = { syncJobs };

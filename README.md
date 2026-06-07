@@ -1,5 +1,5 @@
 JobHunter
-A remote job board that aggregates listings from the Himalayas API and stores them locally in PostgreSQL. Built because I wanted a single place to browse remote jobs without ads or paywalls.
+A remote job board that aggregates tech listings from the Remotive and RemoteOK APIs, filters out non-tech noise, and stores them locally in PostgreSQL. Built because I wanted a single place to browse remote jobs without ads or paywalls.
 Stack
 
 Frontend — React
@@ -32,5 +32,11 @@ node server.js
 
 # Start frontend (port 3000) — in a separate terminal
 cd frontend && npm start
+
 API
-MethodEndpointDescriptionGET/jobsFetch jobs — supports ?search=, ?type=POST/syncPull latest jobs from HimalayasGET/healthHealth check
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| GET | /jobs | Fetch jobs — supports `?search=`, `?type=`, `?limit=`, `?offset=` |
+| POST | /sync | Pull latest listings from Remotive + RemoteOK |
+| GET | /health | Health check |

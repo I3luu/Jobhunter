@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const { initDB } = require('./db');
 const jobsRouter = require('./routes/jobs');
-const { syncJobsFromHimalayas } = require('./services/sync');
+const { syncJobs } = require('./services/sync');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -18,7 +18,7 @@ app.use('/jobs', jobsRouter);
 // POST /sync — manually trigger a sync from the external API
 app.post('/sync', async (req, res) => {
   try {
-    const result = await syncJobsFromHimalayas();
+    const result = await syncJobs();
     res.json({ message: 'Sync complete', ...result });
   } catch (err) {
     console.error('Sync error:', err);
@@ -39,13 +39,13 @@ async function start() {
     console.log(`🚀 JobHunter API running at http://localhost:${PORT}`);
     console.log(`   GET  /jobs       — list jobs`);
     console.log(`   POST /jobs       — insert a job`);
-    console.log(`   POST /sync       — pull from Himalayas API`);
+    console.log(`   POST /sync       — pull from Remotive + RemoteOK`);
     console.log(`   GET  /health     — health check`);
   });
 
   // Auto-sync on startup
   try {
-    await syncJobsFromHimalayas();
+    await syncJobs();
   } catch (err) {
     console.warn('⚠️  Initial sync failed (DB may not be ready):', err.message);
   }

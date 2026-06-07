@@ -354,8 +354,11 @@ export default function App() {
       <footer className="footer">
         <div className="container">
           JobHunter — powered by{' '}
-          <a href="https://himalayas.app" target="_blank" rel="noopener noreferrer">
-            Himalayas API
+          <a href="https://remotive.com" target="_blank" rel="noopener noreferrer">
+            Remotive
+          </a>{' '}&{' '}
+          <a href="https://remoteok.com" target="_blank" rel="noopener noreferrer">
+            RemoteOK
           </a>
         </div>
       </footer>
